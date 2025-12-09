@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto Research System</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+</head>
+<body>
+    <div class="app">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="logo">
+                <i class="ri-coin-line"></i>
+                <span>Crypto Research</span>
+            </div>
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-page="dashboard">
+                    <i class="ri-dashboard-line"></i>
+                    <span>仪表盘</span>
+                </a>
+                <a href="#" class="nav-item" data-page="projects">
+                    <i class="ri-folder-line"></i>
+                    <span>项目管理</span>
+                </a>
+                <a href="#" class="nav-item" data-page="fetch">
+                    <i class="ri-download-cloud-line"></i>
+                    <span>数据抓取</span>
+                </a>
+                <a href="#" class="nav-item" data-page="reports">
+                    <i class="ri-file-text-line"></i>
+                    <span>投研报告</span>
+                </a>
+                <a href="#" class="nav-item" data-page="accounts">
+                    <i class="ri-user-line"></i>
+                    <span>Surf账号</span>
+                </a>
+                <a href="#" class="nav-item" data-page="feishu">
+                    <i class="ri-send-plane-line"></i>
+                    <span>飞书推送</span>
+                </a>
+                <a href="#" class="nav-item" data-page="test">
+                    <i class="ri-flask-line"></i>
+                    <span>测试</span>
+                </a>
+            </nav>
+        </aside>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 仪表盘页面 -->
+            <div id="page-dashboard" class="page active">
+                <div class="page-header">
+                    <h1>仪表盘</h1>
+                </div>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="ri-folder-line"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-projects">0</span>
+                            <span class="stat-label">项目总数</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="ri-file-text-line"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-reports">0</span>
+                            <span class="stat-label">报告数量</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="ri-user-line"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-accounts">0</span>
+                            <span class="stat-label">Surf账号</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="ri-coupon-line"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-quota">0</span>
+                            <span class="stat-label">剩余配额</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>RootData API 状态</h3>
+                    <div id="quota-info">点击刷新查看...</div>
+                    <button class="btn btn-primary" onclick="loadQuota()">
+                        <i class="ri-refresh-line"></i> 刷新配额
+                    </button>
+                </div>
+            </div>
+
+            <!-- 项目管理页面 -->
+            <div id="page-projects" class="page">
+                <div class="page-header">
+                    <h1>项目管理</h1>
+                    <button class="btn btn-primary" onclick="loadProjects()">
+                        <i class="ri-refresh-line"></i> 刷新列表
+                    </button>
+                </div>
+                <div class="card">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>项目名称</th>
+                                <th>代币</th>
+                                <th>融资总额</th>
+                                <th>抓取模式</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="projects-table">
+                            <tr><td colspan="6" class="empty">暂无数据</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 数据抓取页面 -->
+            <div id="page-fetch" class="page">
+                <div class="page-header">
+                    <h1>数据抓取</h1>
+                </div>
+                
+                <!-- 搜索项目 -->
+                <div class="card">
+                    <h3><i class="ri-search-line"></i> 搜索项目</h3>
+                    <div class="form-group">
+                        <input type="text" id="search-query" placeholder="输入项目名称或代币符号..." class="input">
+                        <button class="btn btn-primary" onclick="searchProjects()">搜索</button>
+                    </div>
+                    <div id="search-results" class="search-results"></div>
+                </div>
+
+                <!-- 通过ID抓取 -->
+                <div class="card">
+                    <h3><i class="ri-download-line"></i> 通过ID抓取项目</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>RootData 项目ID</label>
+                            <input type="number" id="fetch-project-id" placeholder="如: 12" class="input">
+                        </div>
+                        <div class="form-group">
+                            <label>抓取模式</label>
+                            <select id="fetch-mode" class="input">
+                                <option value="basic">Basic - 基本信息</option>
+                                <option value="full">Full - 全部信息(含Pro字段)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" onclick="fetchProject()">
+                        <i class="ri-download-cloud-line"></i> 开始抓取
+                    </button>
+                </div>
+
+                <!-- 抓取热门项目 -->
+                <div class="card">
+                    <h3><i class="ri-fire-line"></i> 抓取热门项目 Top100</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>时间范围</label>
+                            <select id="hot-days" class="input">
+                                <option value="1">近1天</option>
+                                <option value="7" selected>近7天</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>抓取模式</label>
+                            <select id="hot-mode" class="input">
+                                <option value="basic">Basic - 基本信息</option>
+                                <option value="full">Full - 全部信息</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button class="btn btn-warning" onclick="fetchHotProjects()">
+                        <i class="ri-fire-line"></i> 抓取热门项目
+                    </button>
+                    <p class="hint">注意：此操作消耗 10 credits，并会批量抓取100个项目</p>
+                </div>
+            </div>
+
+            <!-- 投研报告页面 -->
+            <div id="page-reports" class="page">
+                <div class="page-header">
+                    <h1>投研报告</h1>
+                    <button class="btn btn-primary" onclick="loadReports()">
+                        <i class="ri-refresh-line"></i> 刷新列表
+                    </button>
+                </div>
+                
+                <div class="card">
+                    <h3><i class="ri-add-line"></i> 生成新报告</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>选择项目</label>
+                            <select id="report-project-id" class="input">
+                                <option value="">-- 请先加载项目列表 --</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>生成模式</label>
+                            <select id="report-mode" class="input">
+                                <option value="chat">快速问答（30秒-1分钟）</option>
+                                <option value="research">深度研究（3-10分钟，每周2次）</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" onclick="generateReport()">
+                        <i class="ri-file-add-line"></i> 生成报告
+                    </button>
+                    <p class="hint">快速问答：适合快速了解项目概况 | 深度研究：全面分析，多来源引用</p>
+                </div>
+
+                <div class="card">
+                    <h3>报告列表</h3>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>项目ID</th>
+                                <th>状态</th>
+                                <th>PDF路径</th>
+                                <th>飞书记录</th>
+                                <th>创建时间</th>
+                            </tr>
+                        </thead>
+                        <tbody id="reports-table">
+                            <tr><td colspan="6" class="empty">暂无数据</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Surf账号页面 -->
+            <div id="page-accounts" class="page">
+                <div class="page-header">
+                    <h1>Surf 账号管理</h1>
+                    <button class="btn btn-primary" onclick="loadAccounts()">
+                        <i class="ri-refresh-line"></i> 刷新列表
+                    </button>
+                </div>
+                
+                <div class="card">
+                    <h3><i class="ri-user-add-line"></i> 添加账号</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>邮箱</label>
+                            <input type="email" id="account-email" placeholder="email@example.com" class="input">
+                        </div>
+                        <div class="form-group">
+                            <label>密码</label>
+                            <input type="password" id="account-password" placeholder="密码" class="input">
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" onclick="addAccount()">
+                        <i class="ri-add-line"></i> 添加账号
+                    </button>
+                </div>
+
+                <div class="card">
+                    <h3>账号列表</h3>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>邮箱</th>
+                                <th>状态</th>
+                                <th>本周已用</th>
+                                <th>剩余配额</th>
+                                <th>最后使用</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="accounts-table">
+                            <tr><td colspan="7" class="empty">暂无数据</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 飞书推送页面 -->
+            <div id="page-feishu" class="page">
+                <div class="page-header">
+                    <h1>飞书推送</h1>
+                </div>
+                
+                <div class="card">
+                    <h3><i class="ri-send-plane-line"></i> 推送报告到飞书</h3>
+                    <div class="form-group">
+                        <label>报告ID</label>
+                        <input type="number" id="push-report-id" placeholder="输入报告ID" class="input">
+                    </div>
+                    <button class="btn btn-primary" onclick="pushToFeishu()">
+                        <i class="ri-send-plane-fill"></i> 推送到飞书
+                    </button>
+                </div>
+
+                <div class="card">
+                    <h3>飞书配置状态</h3>
+                    <p class="hint">请确保在 .env 文件中配置了飞书应用信息：</p>
+                    <ul class="config-list">
+                        <li>FEISHU_APP_ID - 飞书应用ID</li>
+                        <li>FEISHU_APP_SECRET - 飞书应用密钥</li>
+                        <li>FEISHU_BITABLE_APP_TOKEN - 多维表格Token</li>
+                        <li>FEISHU_BITABLE_TABLE_ID - 数据表ID</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- 测试页面 -->
+            <div id="page-test" class="page">
+                <div class="page-header">
+                    <h1>测试功能</h1>
+                    <button class="btn btn-primary" onclick="loadTestResults()">
+                        <i class="ri-refresh-line"></i> 刷新结果
+                    </button>
+                </div>
+                
+                <div class="card">
+                    <h3><i class="ri-search-line"></i> 搜索并保存到数据库</h3>
+                    <p class="hint">使用 RootData 搜索接口 (ser_inv)，免费不限次数，支持搜索项目/机构/人物</p>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>搜索关键词</label>
+                            <input type="text" id="test-search-query" placeholder="输入项目名称、代币符号或机构名称..." class="input">
+                        </div>
+                        <div class="form-group">
+                            <label>精确搜索 X Handle</label>
+                            <select id="test-precise-search" class="input">
+                                <option value="false">否</option>
+                                <option value="true">是</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" onclick="testSearchAndSave()">
+                        <i class="ri-search-line"></i> 搜索并保存
+                    </button>
+                </div>
+
+                <div class="card">
+                    <h3><i class="ri-filter-line"></i> 筛选结果</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>按关键词筛选</label>
+                            <input type="text" id="test-filter-query" placeholder="筛选关键词..." class="input">
+                        </div>
+                        <div class="form-group">
+                            <label>按类型筛选</label>
+                            <select id="test-filter-type" class="input">
+                                <option value="">全部</option>
+                                <option value="1">项目</option>
+                                <option value="2">机构</option>
+                                <option value="3">人物</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button class="btn btn-secondary" onclick="loadTestResults()">
+                        <i class="ri-filter-line"></i> 应用筛选
+                    </button>
+                </div>
+
+                <div class="card">
+                    <h3>搜索结果列表</h3>
+                    <p class="hint">点击"抓取详情"将调用 get_item 接口（2 credits/次）获取完整信息并保存到项目库，之后可用于生成投研报告</p>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>搜索词</th>
+                                <th>类型</th>
+                                <th>名称</th>
+                                <th>简介</th>
+                                <th>状态</th>
+                                <th>创建时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="test-results-table">
+                            <tr><td colspan="8" class="empty">暂无数据</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div id="toast" class="toast"></div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
