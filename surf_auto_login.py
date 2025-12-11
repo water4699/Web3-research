@@ -17,6 +17,7 @@ from pathlib import Path
 import json
 from typing import Optional, Tuple
 from dataclasses import dataclass
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 @dataclass
 class EmailConfig:
@@ -543,7 +544,32 @@ class SurfAutoLogin:
     async def _navigate_to_login(self):
         """导航到登录页面"""
         print("🌐 访问Surf主页面...")
-        await self.page.goto("https://asksurf.ai/chat", wait_until="domcontentloaded")
+        # 更长超时+重试，并在页面关闭时重建
+        nav_url = "https://asksurf.ai/chat"
+        nav_success = False
+        for attempt in range(3):
+            try:
+                # 如果页面被关闭，则重建
+                try:
+                    if not self.page or self.page.is_closed():
+                        self.page = await self.browser.new_page()
+                except Exception as e:
+                    print(f"⚠️ 页面状态检查失败，重建页面: {e}")
+                    self.page = await self.browser.new_page()
+
+                await self.page.goto(nav_url, wait_until="domcontentloaded", timeout=1800000)
+                nav_success = True
+                break
+            except (PlaywrightTimeoutError,) as e:
+                print(f"⚠️ 导航超时({attempt+1}/3): {e}")
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"⚠️ 导航异常({attempt+1}/3): {e}")
+                await asyncio.sleep(1)
+
+        if not nav_success:
+            print("✗ 无法导航到登录页，终止自动登录")
+            raise PlaywrightTimeoutError("Navigation to Surf chat failed after retries")
 
         # 智能等待页面关键元素加载完成
         print("⏳ 智能等待页面加载...")

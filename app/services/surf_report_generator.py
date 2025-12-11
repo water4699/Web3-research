@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional, Literal
 from pathlib import Path
 from enum import Enum
-from playwright.async_api import async_playwright, Browser, Page
+from playwright.async_api import async_playwright, Browser, Page, TimeoutError
 from sqlalchemy.orm import Session
 
 from app.models import Project, Report, SurfAccount
@@ -127,25 +127,51 @@ class SurfReportGenerator:
             # 首先检查是否已经登录
             print("🔍 检查是否已经登录...")
             
-            # 导航到主页面检查登录状态
-            try:
-                await self.page.goto(
-                    f"{settings.surf_base_url}/chat",
-                    wait_until="domcontentloaded",
-                    timeout=60000
-                )
-                await self.page.wait_for_timeout(2000)
-            except:
-                # 如果导航失败，尝试导航到主页
+            # 导航到主页面检查登录状态（带重试和更长超时）
+            nav_success = False
+            for attempt in range(3):
                 try:
                     await self.page.goto(
-                        settings.surf_base_url,
+                        f"{settings.surf_base_url}/chat",
                         wait_until="domcontentloaded",
-                        timeout=60000
+                        timeout=1800000  # 延长到30分钟
                     )
                     await self.page.wait_for_timeout(2000)
-                except:
-                    pass
+                    nav_success = True
+                    break
+                except Exception as e:
+                    print(f"⚠️ 导航到chat失败({attempt+1}/3): {e}")
+                    try:
+                        # 重新创建页面再试
+                        self.page = await self.browser.new_page()
+                    except Exception as e2:
+                        print(f"⚠️ 重新创建页面失败: {e2}")
+                        break
+
+            if not nav_success:
+                # 如果导航失败，尝试导航到主页，仍然带重试
+                for attempt in range(3):
+                    try:
+                        await self.page.goto(
+                            settings.surf_base_url,
+                            wait_until="domcontentloaded",
+                            timeout=1800000
+                        )
+                        await self.page.wait_for_timeout(2000)
+                        nav_success = True
+                        break
+                    except Exception as e:
+                        print(f"⚠️ 导航到主页失败({attempt+1}/3): {e}")
+                        try:
+                            self.page = await self.browser.new_page()
+                        except Exception as e2:
+                            print(f"⚠️ 重新创建页面失败: {e2}")
+                            break
+
+            # 若两轮导航仍失败，直接中断，避免继续无效的登录/IMAP流程
+            if not nav_success:
+                print("✗ 无法访问 Surf 主页面，终止本次登录")
+                return False
             
             # 检查登录状态
             is_already_logged_in = await self._is_logged_in()
