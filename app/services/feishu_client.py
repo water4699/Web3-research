@@ -2,12 +2,124 @@
 飞书多维表格 API 客户端
 """
 import httpx
+import json
+import gzip
+import base64
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from pathlib import Path
 from app.config import get_settings
 
 settings = get_settings()
+
+
+def parse_feishu_base_file(file_path: str) -> Dict[str, Any]:
+    """
+    解析飞书多维表格的.base导出文件
+    返回表格结构信息
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        # 解码并解压snapshot数据
+        snapshot_data = base64.b64decode(data['gzipSnapshot'])
+        snapshot_json = gzip.decompress(snapshot_data).decode('utf-8')
+        snapshot = json.loads(snapshot_json)
+
+        print(f"📄 快照数据类型: {type(snapshot)}")
+        print(f"📄 快照数据结构: {list(snapshot.keys()) if isinstance(snapshot, dict) else '不是字典'}")
+
+        # 提取表格信息
+        table_info = {
+            'name': '项目管理甘特图',  # 默认名称
+            'fields': [],
+            'views': []
+        }
+
+        # 尝试不同的数据结构
+        try:
+            # 情况1: snapshot是字典
+            if isinstance(snapshot, dict):
+                if 'name' in snapshot:
+                    table_info['name'] = snapshot['name']
+
+                # 查找字段信息
+                if 'snapshot' in snapshot and isinstance(snapshot['snapshot'], dict):
+                    meta = snapshot['snapshot'].get('meta', {})
+                    if 'fieldMap' in meta:
+                        for field_id, field_info in meta['fieldMap'].items():
+                            table_info['fields'].append({
+                                'id': field_id,
+                                'name': field_info.get('name', ''),
+                                'type': field_info.get('type', ''),
+                                'property': field_info.get('property', {})
+                            })
+
+                    if 'viewMap' in meta:
+                        for view_id, view_info in meta['viewMap'].items():
+                            table_info['views'].append({
+                                'id': view_id,
+                                'name': view_info.get('name', ''),
+                                'type': view_info.get('type', '')
+                            })
+
+            # 情况2: snapshot是列表或其他结构
+            elif isinstance(snapshot, list) and len(snapshot) > 0:
+                print(f"📄 快照是列表，长度: {len(snapshot)}")
+                print(f"📄 第一个元素类型: {type(snapshot[0])}")
+
+                # 尝试查找包含字段信息的对象
+                for item in snapshot[:5]:  # 只检查前5个
+                    if isinstance(item, dict) and 'meta' in item:
+                        meta = item['meta']
+                        if 'fieldMap' in meta:
+                            print("✅ 找到字段信息！")
+                            for field_id, field_info in meta['fieldMap'].items():
+                                table_info['fields'].append({
+                                    'id': field_id,
+                                    'name': field_info.get('name', ''),
+                                    'type': field_info.get('type', ''),
+                                    'property': field_info.get('property', {})
+                                })
+
+                        if 'viewMap' in meta:
+                            for view_id, view_info in meta['viewMap'].items():
+                                table_info['views'].append({
+                                    'id': view_id,
+                                    'name': view_info.get('name', ''),
+                                    'type': view_info.get('type', '')
+                                })
+                        break
+
+        except Exception as parse_error:
+            print(f"⚠️ 解析过程中出错: {parse_error}")
+
+        # 如果没找到字段信息，提供默认的常见字段
+        if not table_info['fields']:
+            print("⚠️ 未找到字段信息，使用默认字段列表")
+            table_info['fields'] = [
+                {'id': '1', 'name': '项目名称', 'type': 1, 'property': {}},
+                {'id': '2', 'name': '开始时间', 'type': 5, 'property': {}},
+                {'id': '3', 'name': '结束时间', 'type': 5, 'property': {}},
+                {'id': '4', 'name': '进度', 'type': 2, 'property': {}},
+                {'id': '5', 'name': '负责人', 'type': 11, 'property': {}},
+                {'id': '6', 'name': '项目状态', 'type': 3, 'property': {'options': [
+                    {'name': '未开始'}, {'name': '进行中'}, {'name': '已完成'}, {'name': '暂停'}
+                ]}},
+                {'id': '7', 'name': '优先级', 'type': 3, 'property': {'options': [
+                    {'name': '高'}, {'name': '中'}, {'name': '低'}
+                ]}},
+                {'id': '8', 'name': '里程碑', 'type': 1, 'property': {}},
+                {'id': '9', 'name': '详细描述', 'type': 1, 'property': {}},
+                {'id': '10', 'name': '投研报告', 'type': 6, 'property': {}},
+                {'id': '11', 'name': '备注', 'type': 1, 'property': {}}
+            ]
+
+        return table_info
+
+    except Exception as e:
+        raise Exception(f"解析.base文件失败: {str(e)}")
 
 
 class FeishuClient:
@@ -220,42 +332,214 @@ class FeishuClient:
 class ReportPusher:
     """投研报告推送到飞书"""
     
-    def __init__(self):
+    def __init__(self, base_file_path: str = None):
         self.client = FeishuClient()
+        self.table_schema = None
+
+        # 如果提供了.base文件路径，解析表格结构
+        if base_file_path:
+            try:
+                self.table_schema = parse_feishu_base_file(base_file_path)
+            except Exception as e:
+                print(f"⚠️ 解析表格结构失败，使用默认映射: {e}")
+                self.table_schema = None
     
     async def push_report(
         self,
         project_name: str,
         project_info: Dict,
         report_pdf_path: str = None,
-        report_url: str = None
+        report_url: str = None,
+        account_info: Dict = None,
+        report_status: str = "已完成"
     ) -> str:
         """
         推送投研报告到飞书多维表格
         返回记录ID
         """
-        # 构建字段数据（根据你的表格结构调整）
-        fields = {
-            "项目名称": project_name,
-            "代币符号": project_info.get("token_symbol", ""),
-            "一句话介绍": project_info.get("one_liner", ""),
-            "融资总额": project_info.get("total_funding", 0),
-            "标签": ", ".join(project_info.get("tags", [])),
-            "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        
-        # 如果有PDF，先上传
-        if report_pdf_path:
-            file_token = await self.client.upload_file(report_pdf_path)
-            fields["投研报告"] = [{
-                "file_token": file_token
-            }]
-        
-        if report_url:
-            fields["报告链接"] = report_url
-        
+        # 构建字段数据（适配项目管理甘特图表格）
+        fields = self._build_project_fields(
+            project_name, project_info, report_pdf_path,
+            report_url, account_info, report_status
+        )
+
         result = await self.client.add_record(fields)
         return result.get("record", {}).get("record_id")
+
+    def _build_project_fields(
+        self,
+        project_name: str,
+        project_info: Dict,
+        report_pdf_path: str = None,
+        report_url: str = None,
+        account_info: Dict = None,
+        report_status: str = "已完成"
+    ) -> Dict[str, Any]:
+        """构建适配项目管理甘特图表格的字段数据"""
+
+        # 映射项目状态
+        status_mapping = {
+            "已完成": "已完成",
+            "生成中": "进行中",
+            "失败": "暂停",
+            "pending": "未开始",
+            "generating": "进行中",
+            "completed": "已完成",
+            "failed": "暂停"
+        }
+        project_status = status_mapping.get(report_status, "未开始")
+
+        # 基础项目信息 - 适配甘特图表格字段
+        fields = {
+            "项目名称": project_name,
+            "项目状态": project_status,
+            "优先级": "中",  # 默认中等优先级
+        }
+
+        # 日期字段：开始时间和结束时间
+        if project_info.get("created_at"):
+            try:
+                if hasattr(project_info["created_at"], 'strftime'):
+                    fields["开始时间"] = project_info["created_at"].strftime("%Y-%m-%d")
+                else:
+                    # 如果是字符串，尝试解析
+                    created_date = datetime.fromisoformat(str(project_info["created_at"]).replace('Z', '+00:00'))
+                    fields["开始时间"] = created_date.strftime("%Y-%m-%d")
+            except:
+                # 如果解析失败，使用今天作为开始时间
+                fields["开始时间"] = datetime.now().strftime("%Y-%m-%d")
+
+        # 估算结束时间（开始时间后3个月）
+        if fields.get("开始时间"):
+            try:
+                start_date = datetime.strptime(fields["开始时间"], "%Y-%m-%d")
+                # 计算3个月后的日期
+                if start_date.month <= 9:
+                    end_date = start_date.replace(month=start_date.month + 3)
+                else:
+                    end_date = start_date.replace(year=start_date.year + 1, month=start_date.month - 9)
+                fields["结束时间"] = end_date.strftime("%Y-%m-%d")
+
+                # 根据状态设置进度
+                if project_status == "已完成":
+                    fields["进度"] = 100
+                elif project_status == "进行中":
+                    fields["进度"] = 50
+                else:
+                    fields["进度"] = 0
+            except:
+                fields["进度"] = 0
+
+        # 负责人信息（人员字段）
+        if account_info and account_info.get('email'):
+            fields["负责人"] = account_info['email']
+
+        # 里程碑（文本字段，用换行分隔）
+        milestones = []
+        if report_status in ["已完成", "completed"]:
+            milestones.append("✅ 项目数据抓取完成")
+            milestones.append("✅ 投研报告生成完成")
+            if report_pdf_path:
+                milestones.append("✅ PDF报告上传完成")
+            if report_url:
+                milestones.append("✅ 报告链接生成完成")
+        elif report_status in ["生成中", "generating"]:
+            milestones.append("✅ 项目数据抓取完成")
+            milestones.append("🔄 投研报告生成中...")
+        else:
+            milestones.append("❌ 报告生成失败")
+
+        if milestones:
+            fields["里程碑"] = "\n".join(milestones)
+
+        # 详细描述（整合项目信息）
+        description_parts = []
+        description_parts.append(f"项目名称: {project_name}")
+
+        if project_info.get("token_symbol"):
+            description_parts.append(f"代币符号: {project_info['token_symbol']}")
+
+        if project_info.get("one_liner"):
+            description_parts.append(f"一句话介绍: {project_info['one_liner']}")
+
+        if project_info.get("total_funding"):
+            description_parts.append(f"融资总额: ${Number(project_info['total_funding']).toLocaleString()}")
+
+        if project_info.get("tags"):
+            description_parts.append(f"标签: {', '.join(project_info['tags'])}")
+
+        if project_info.get("description"):
+            description_parts.append(f"\n项目详细描述:\n{project_info['description'][:500]}{'...' if len(project_info['description']) > 500 else ''}")
+
+        if project_info.get("investors"):
+            investor_names = [inv.get("name", "") for inv in project_info["investors"][:5]]
+            if investor_names:
+                description_parts.append(f"\n主要投资者: {', '.join(investor_names)}")
+
+        if project_info.get("social_media"):
+            social_info = []
+            if project_info["social_media"].get("website"):
+                social_info.append(f"官网: {project_info['social_media']['website']}")
+            if project_info["social_media"].get("twitter"):
+                social_info.append(f"Twitter: {project_info['social_media']['twitter']}")
+            if social_info:
+                description_parts.append(f"\n社交媒体: {' | '.join(social_info)}")
+
+        fields["详细描述"] = "\n".join(description_parts)
+
+        # 附件：PDF报告（如果有）
+        if report_pdf_path:
+            try:
+                import asyncio
+                file_token = asyncio.run(self.client.upload_file(report_pdf_path))
+                fields["投研报告"] = [{
+                    "file_token": file_token
+                }]
+            except Exception as e:
+                print(f"⚠️ PDF上传失败: {e}")
+
+        # 备注信息（汇总其他重要信息）
+        notes = []
+        notes.append(f"最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        if project_info.get("active") is False:
+            notes.append("⚠️ 项目已停止运营")
+
+        if project_info.get("heat"):
+            notes.append(f"热度值: {project_info['heat']}")
+
+        if account_info:
+            notes.append(f"报告生成账号: {account_info.get('email', '未知')}")
+            if 'weekly_quota_used' in account_info and 'weekly_quota_limit' in account_info:
+                notes.append(f"账号额度: {account_info['weekly_quota_used']}/{account_info['weekly_quota_limit']}")
+        
+        if report_url:
+            notes.append(f"报告链接: {report_url}")
+
+        fields["备注"] = "\n".join(notes)
+
+        return fields
+
+    def get_table_schema(self) -> Dict[str, Any]:
+        """获取解析的表格结构信息"""
+        return self.table_schema
+
+    def print_table_info(self):
+        """打印表格结构信息"""
+        if not self.table_schema:
+            print("未提供.base文件，无法解析表格结构")
+            return
+
+        print("📊 表格信息:")
+        print(f"表格名称: {self.table_schema.get('name', '未知')}")
+
+        print(f"\n📋 字段列表 ({len(self.table_schema.get('fields', []))} 个字段):")
+        for field in self.table_schema.get('fields', []):
+            print(f"  • {field['name']} (类型: {field['type']})")
+
+        print(f"\n👁️ 视图列表 ({len(self.table_schema.get('views', []))} 个视图):")
+        for view in self.table_schema.get('views', []):
+            print(f"  • {view['name']} (类型: {view['type']})")
     
     async def batch_push_projects(self, projects: List[Dict]) -> List[str]:
         """批量推送项目信息"""

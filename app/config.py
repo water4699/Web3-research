@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     feishu_bitable_app_token: str = ""
     feishu_bitable_table_id: str = ""
     feishu_base_url: str = "https://open.feishu.cn/open-apis"
+    feishu_base_file_path: str = r"C:\Users\DELL\Downloads\项目管理甘特图.base"
     
     # Surf
     surf_base_url: str = "https://asksurf.ai"

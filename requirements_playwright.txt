@@ -1,0 +1,4 @@
+# Playwright 版本邮箱读取所需依赖
+playwright>=1.40.0
+rich>=13.0.0
+

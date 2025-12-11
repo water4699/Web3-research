@@ -62,7 +62,12 @@ class SurfAccount(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True)
-    password_encrypted = Column(Text)
+    
+    # 邮箱登录配置（用于IMAP获取验证码）
+    email_password_encrypted = Column(Text)  # 邮箱密码（加密存储）
+    email_server = Column(String(100), default='imap.gmail.com')  # IMAP服务器
+    email_port = Column(Integer, default=993)  # IMAP端口
+    
     cookie_data = Column(Text)
     
     # 每周免费额度 (每周2次)

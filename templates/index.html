@@ -84,12 +84,75 @@
                         </div>
                     </div>
                 </div>
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <div class="card-title">
+                            <div class="card-title-left">
+                                <i class="ri-flashlight-line"></i>
+                                <h3>快捷入口</h3>
+                            </div>
+                            <button class="btn btn-sm btn-primary" onclick="loadDashboard()">
+                                <i class="ri-refresh-line"></i> 刷新
+                            </button>
+                        </div>
+                        <div class="quick-actions">
+                            <button class="btn btn-secondary" onclick="document.querySelector('[data-page=fetch]').click()">
+                                <i class="ri-search-line"></i> 搜索并抓取项目
+                            </button>
+                            <button class="btn btn-secondary" onclick="document.querySelector('[data-page=reports]').click()">
+                                <i class="ri-file-add-line"></i> 生成投研报告
+                            </button>
+                            <button class="btn btn-secondary" onclick="document.querySelector('[data-page=accounts]').click()">
+                                <i class="ri-user-add-line"></i> 添加 Surf 账号
+                            </button>
+                            <button class="btn btn-secondary" onclick="document.querySelector('[data-page=test]').click()">
+                                <i class="ri-flask-line"></i> 测试搜索并保存
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title">
+                            <div class="card-title-left">
+                                <i class="ri-fire-line"></i>
+                                <h3>最新项目</h3>
+                            </div>
+                        </div>
+                        <div id="dashboard-projects" class="dashboard-list empty-tip">加载中...</div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title">
+                            <div class="card-title-left">
+                                <i class="ri-file-chart-line"></i>
+                                <h3>最新报告</h3>
+                            </div>
+                        </div>
+                        <div id="dashboard-reports" class="dashboard-list empty-tip">加载中...</div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title">
+                            <div class="card-title-left">
+                                <i class="ri-shield-keyhole-line"></i>
+                                <h3>Surf 账号状态</h3>
+                            </div>
+                        </div>
+                        <div id="dashboard-accounts" class="dashboard-list empty-tip">加载中...</div>
+                    </div>
+
                 <div class="card">
+                        <div class="card-title">
+                            <div class="card-title-left">
+                                <i class="ri-database-2-line"></i>
                     <h3>RootData API 状态</h3>
-                    <div id="quota-info">点击刷新查看...</div>
-                    <button class="btn btn-primary" onclick="loadQuota()">
+                            </div>
+                            <button class="btn btn-sm btn-primary" onclick="loadQuota()">
                         <i class="ri-refresh-line"></i> 刷新配额
                     </button>
+                        </div>
+                        <div id="quota-info">点击刷新查看...</div>
+                    </div>
                 </div>
             </div>
 
@@ -118,6 +181,19 @@
                         </tbody>
                     </table>
                 </div>
+
+                <!-- 项目详情区域 -->
+                <div id="project-detail" class="card project-detail" style="display: none;">
+                    <div class="detail-header">
+                        <h3 id="detail-title">项目详情</h3>
+                        <button class="btn btn-sm btn-secondary" onclick="hideProjectDetail()">
+                            <i class="ri-close-line"></i> 关闭
+                        </button>
+                    </div>
+                    <div id="project-detail-content">
+                        <div class="loading">加载中...</div>
+                    </div>
+                </div>
             </div>
 
             <!-- 数据抓取页面 -->
@@ -130,10 +206,12 @@
                 <div class="card">
                     <h3><i class="ri-search-line"></i> 搜索项目</h3>
                     <div class="form-group">
-                        <input type="text" id="search-query" placeholder="输入项目名称或代币符号..." class="input">
-                        <button class="btn btn-primary" onclick="searchProjects()">搜索</button>
+                        <label for="search-query">项目名称或代币符号</label>
+                        <input type="text" id="search-query" placeholder="输入项目名称或代币符号，实时搜索..." class="input">
                     </div>
-                    <div id="search-results" class="search-results"></div>
+                    <div id="search-results" class="search-results">
+                        <p class="hint">请输入项目名称或代币符号进行搜索</p>
+                    </div>
                 </div>
 
                 <!-- 通过ID抓取 -->
@@ -358,7 +436,7 @@
                             </select>
                         </div>
                     </div>
-                    <button class="btn btn-secondary" onclick="loadTestResults()">
+                    <button class="btn btn-secondary" onclick="loadTestResults(1)">
                         <i class="ri-filter-line"></i> 应用筛选
                     </button>
                 </div>
@@ -383,6 +461,21 @@
                             <tr><td colspan="8" class="empty">暂无数据</td></tr>
                         </tbody>
                     </table>
+
+                    <!-- 分页控件 -->
+                    <div id="test-pagination" class="pagination" style="display: none;">
+                        <button class="pagination-btn" id="test-prev-btn" onclick="changeTestPage(currentTestPage - 1)">
+                            <i class="ri-arrow-left-line"></i> 上一页
+                        </button>
+
+                        <div id="test-page-numbers" class="page-numbers"></div>
+
+                        <button class="pagination-btn" id="test-next-btn" onclick="changeTestPage(currentTestPage + 1)">
+                            下一页 <i class="ri-arrow-right-line"></i>
+                        </button>
+
+                        <div class="pagination-info" id="test-pagination-info"></div>
+                    </div>
                 </div>
             </div>
         </main>

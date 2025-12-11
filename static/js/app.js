@@ -58,9 +58,10 @@ document.querySelectorAll('.nav-item').forEach(item => {
         // 加载页面数据
         if (page === 'dashboard') loadDashboard();
         if (page === 'projects') loadProjects();
+        if (page === 'fetch') initSearchInput();
         if (page === 'reports') { loadReports(); loadProjectsForSelect(); }
         if (page === 'accounts') loadAccounts();
-        if (page === 'test') loadTestResults();
+        if (page === 'test') loadTestResults(1);
     });
 });
 
@@ -92,18 +93,99 @@ async function api(endpoint, options = {}) {
 async function loadDashboard() {
     try {
         const [projects, reports, accounts] = await Promise.all([
-            api('/api/projects?limit=1000'),
-            api('/api/reports?limit=1000'),
+            api('/api/projects?limit=5'),
+            api('/api/reports?limit=5'),
             api('/api/surf/accounts')
         ]);
         
+        // 顶部统计
         document.getElementById('stat-projects').textContent = projects.count || 0;
         document.getElementById('stat-reports').textContent = reports.data?.length || 0;
         document.getElementById('stat-accounts').textContent = accounts.data?.length || 0;
         document.getElementById('stat-quota').textContent = accounts.total_remaining_quota || 0;
+
+        renderDashboardProjects(projects.data || []);
+        renderDashboardReports(reports.data || []);
+        renderDashboardAccounts(accounts);
     } catch (e) {
         console.error('Failed to load dashboard:', e);
     }
+}
+
+function renderDashboardProjects(list) {
+    const container = document.getElementById('dashboard-projects');
+    if (!list.length) {
+        container.classList.add('empty-tip');
+        container.innerHTML = '暂无项目，请先抓取数据';
+        return;
+    }
+    container.classList.remove('empty-tip');
+    container.innerHTML = list.map(p => `
+        <div class="dashboard-item">
+            <div class="dashboard-item-title">
+                <div class="item-main">
+                    <strong>${p.name || '-'}</strong>
+                    <span class="sub-text">${p.token_symbol || '无代币'} · 抓取模式：${p.fetch_mode || 'basic'}</span>
+                </div>
+                <span class="badge">${p.fetch_mode || '-'}</span>
+            </div>
+            <div class="dashboard-meta">
+                <span><i class="ri-calendar-line"></i> ${p.created_at ? new Date(p.created_at).toLocaleString() : '-'}</span>
+                <span><i class="ri-coins-line"></i> ${p.total_funding ? '$' + Number(p.total_funding).toLocaleString() : '融资未知'}</span>
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderDashboardReports(list) {
+    const container = document.getElementById('dashboard-reports');
+    if (!list.length) {
+        container.classList.add('empty-tip');
+        container.innerHTML = '暂无报告，去生成一份吧';
+        return;
+    }
+    container.classList.remove('empty-tip');
+    container.innerHTML = list.map(r => `
+        <div class="dashboard-item">
+            <div class="dashboard-item-title">
+                <div class="item-main">
+                    <strong>报告 #${r.id}</strong>
+                    <span class="sub-text">项目ID：${r.project_id}</span>
+                </div>
+                <span class="status status-${r.status}">${r.status}</span>
+            </div>
+            <div class="dashboard-meta">
+                <span><i class="ri-time-line"></i> ${r.created_at ? new Date(r.created_at).toLocaleString() : '-'}</span>
+                <span><i class="ri-share-box-line"></i> ${r.feishu_record_id ? '已推送飞书' : '未推送'}</span>
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderDashboardAccounts(accountsData) {
+    const container = document.getElementById('dashboard-accounts');
+    const list = accountsData.data || [];
+    if (!list.length) {
+        container.classList.add('empty-tip');
+        container.innerHTML = '暂无 Surf 账号，请先添加';
+        return;
+    }
+    container.classList.remove('empty-tip');
+    container.innerHTML = list.map(acc => `
+        <div class="dashboard-item">
+            <div class="dashboard-item-title">
+                <div class="item-main">
+                    <strong>${acc.email}</strong>
+                    <span class="sub-text">已用 ${acc.weekly_quota_used}/${acc.weekly_quota_limit}</span>
+                </div>
+                <span class="status status-${acc.status}">${acc.status}</span>
+            </div>
+            <div class="dashboard-meta">
+                <span><i class="ri-battery-line"></i> 剩余额度：${acc.remaining}</span>
+                <span><i class="ri-time-line"></i> ${acc.last_used_at ? new Date(acc.last_used_at).toLocaleString() : '未使用'}</span>
+            </div>
+        </div>
+    `).join('');
 }
 
 async function loadQuota() {
@@ -123,11 +205,18 @@ async function loadQuota() {
 // ==================== 项目管理 ====================
 async function loadProjects() {
     try {
-        const data = await api('/api/projects?limit=100');
         const tbody = document.getElementById('projects-table');
+        // loading 状态
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">加载中...</td></tr>';
+        // 隐藏详情
+        const detailDiv = document.getElementById('project-detail');
+        if (detailDiv) detailDiv.style.display = 'none';
+
+        const data = await api('/api/projects?limit=100');
         
         if (!data.data || data.data.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无数据</td></tr>';
+            showToast('暂无项目数据', 'info');
             return;
         }
         
@@ -148,40 +237,181 @@ async function loadProjects() {
                 </td>
             </tr>
         `).join('');
+        showToast('列表已刷新');
     } catch (e) {
         console.error('Failed to load projects:', e);
+        const tbody = document.getElementById('projects-table');
+        tbody.innerHTML = '<tr><td colspan="6" class="empty" style="color: var(--danger);">加载失败，请重试</td></tr>';
+        showToast('刷新失败，请检查网络或服务器', 'error');
     }
 }
 
 async function viewProject(id) {
     try {
+        const detailDiv = document.getElementById('project-detail');
+        const detailContent = document.getElementById('project-detail-content');
+        const detailTitle = document.getElementById('detail-title');
+
+        // 显示详情区域
+        detailDiv.style.display = 'block';
+        detailContent.innerHTML = '<div class="loading">加载中...</div>';
+
+        // 滚动到详情区域
+        detailDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
         const data = await api(`/api/projects/${id}`);
-        alert(JSON.stringify(data, null, 2));
-    } catch (e) {}
+
+        // 渲染项目详情
+        const project = data;
+        detailTitle.textContent = `${project.name} - 项目详情`;
+
+        detailContent.innerHTML = `
+            <div class="project-detail-grid">
+                <div class="detail-section">
+                    <h4>基本信息</h4>
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <label>项目ID:</label>
+                            <span>${project.id}</span>
+                        </div>
+                        <div class="detail-item">
+                            <label>项目名称:</label>
+                            <span>${project.name || '-'}</span>
+                        </div>
+                        <div class="detail-item">
+                            <label>代币符号:</label>
+                            <span>${project.token_symbol || '-'}</span>
+                        </div>
+                        <div class="detail-item">
+                            <label>成立时间:</label>
+                            <span>${project.establishment_date || '-'}</span>
+                        </div>
+                        <div class="detail-item">
+                            <label>融资总额:</label>
+                            <span>${project.total_funding ? '$' + Number(project.total_funding).toLocaleString() : '-'}</span>
+                        </div>
+                        <div class="detail-item">
+                            <label>活跃状态:</label>
+                            <span class="status ${project.active ? 'status-active' : 'status-inactive'}">${project.active ? '活跃' : '不活跃'}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="detail-section">
+                    <h4>项目简介</h4>
+                    <p class="project-description">${project.one_liner || '暂无简介'}</p>
+                </div>
+
+                ${project.description ? `
+                <div class="detail-section">
+                    <h4>详细描述</h4>
+                    <div class="project-description">${project.description}</div>
+                </div>
+                ` : ''}
+
+                ${project.tags && project.tags.length > 0 ? `
+                <div class="detail-section">
+                    <h4>标签</h4>
+                    <div class="tags-list">
+                        ${project.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
+                    </div>
+                </div>
+                ` : ''}
+
+                ${project.investors && project.investors.length > 0 ? `
+                <div class="detail-section">
+                    <h4>投资者</h4>
+                    <div class="investors-list">
+                        ${project.investors.slice(0, 10).map(investor =>
+                            investor.logo ?
+                            `<div class="investor-item"><img src="${getImageUrl(investor.logo)}" alt="${investor.name}" onerror="handleImageError(this)"> <span>${investor.name}</span></div>` :
+                            `<div class="investor-item"><span>${investor.name}</span></div>`
+                        ).join('')}
+                        ${project.investors.length > 10 ? `<div class="investor-item"><span>... 还有 ${project.investors.length - 10} 个投资者</span></div>` : ''}
+                    </div>
+                </div>
+                ` : ''}
+
+                ${project.social_media ? `
+                <div class="detail-section">
+                    <h4>社交媒体</h4>
+                    <div class="social-links">
+                        ${project.social_media.website ? `<a href="${project.social_media.website}" target="_blank" class="social-link"><i class="ri-global-line"></i> 官网</a>` : ''}
+                        ${project.social_media.twitter ? `<a href="${project.social_media.twitter}" target="_blank" class="social-link"><i class="ri-twitter-line"></i> Twitter</a>` : ''}
+                        ${project.social_media.telegram ? `<a href="${project.social_media.telegram}" target="_blank" class="social-link"><i class="ri-telegram-line"></i> Telegram</a>` : ''}
+                        ${project.social_media.discord ? `<a href="${project.social_media.discord}" target="_blank" class="social-link"><i class="ri-discord-line"></i> Discord</a>` : ''}
+                        ${project.social_media.github ? `<a href="${project.social_media.github}" target="_blank" class="social-link"><i class="ri-github-line"></i> GitHub</a>` : ''}
+                    </div>
+                </div>
+                ` : ''}
+
+                <div class="detail-section">
+                    <h4>数据信息</h4>
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <label>抓取模式:</label>
+                            <span class="status status-${project.fetch_mode === 'full' ? 'active' : 'pending'}">${project.fetch_mode || '-'}</span>
+                        </div>
+                        <div class="detail-item">
+                            <label>创建时间:</label>
+                            <span>${project.created_at ? new Date(project.created_at).toLocaleString() : '-'}</span>
+                        </div>
+                        <div class="detail-item">
+                            <label>更新时间:</label>
+                            <span>${project.updated_at ? new Date(project.updated_at).toLocaleString() : '-'}</span>
+                        </div>
+                        <div class="detail-item">
+                            <label>RootData ID:</label>
+                            <span>${project.rootdata_id || '-'}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+    } catch (e) {
+        console.error('Failed to load project detail:', e);
+        showToast('加载项目详情失败', 'error');
+    }
+}
+
+function hideProjectDetail() {
+    const detailDiv = document.getElementById('project-detail');
+    detailDiv.style.display = 'none';
 }
 
 // ==================== 数据抓取 ====================
-async function searchProjects() {
-    const query = document.getElementById('search-query').value.trim();
-    if (!query) {
-        showToast('请输入搜索关键词', 'error');
+// 实时搜索相关变量
+let searchTimeout = null;
+let currentSearchQuery = '';
+
+async function searchProjects(query = null) {
+    const searchQuery = query || document.getElementById('search-query').value.trim();
+
+    if (!searchQuery) {
+        const container = document.getElementById('search-results');
+        container.innerHTML = '<p class="hint">请输入项目名称或代币符号进行搜索</p>';
         return;
     }
+
+    if (searchQuery === currentSearchQuery) return;
+
+    currentSearchQuery = searchQuery;
     
     try {
         const data = await api('/api/projects/search', {
             method: 'POST',
-            body: JSON.stringify({ query })
+            body: JSON.stringify({ query: searchQuery })
         });
         
         const container = document.getElementById('search-results');
         if (!data.data || data.data.length === 0) {
-            container.innerHTML = '<p class="hint">未找到相关项目</p>';
+            container.innerHTML = `<p class="hint">未找到包含"${searchQuery}"的项目</p>`;
             return;
         }
         
-        container.innerHTML = data.data.map(p => `
-            <div class="search-item" onclick="selectProject(${p.id}, '${p.name}')">
+        container.innerHTML = data.data.slice(0, 20).map(p => `
+            <div class="search-item" onclick="selectProject(${p.id}, '${p.name.replace(/'/g, "\\'")}')">
                 ${p.logo ? `<img src="${getImageUrl(p.logo)}" alt="" onerror="handleImageError(this)">` : '<div style="width:40px;height:40px;background:var(--bg-hover);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--text-muted);">图</div>'}
                 <div class="search-item-info">
                     <div class="search-item-name">${p.name} ${p.active === false ? '(已停止)' : ''}</div>
@@ -191,8 +421,55 @@ async function searchProjects() {
             </div>
         `).join('');
         
+        // 只在非实时搜索时显示Toast
+        if (query) {
         showToast(`找到 ${data.count} 个项目`);
-    } catch (e) {}
+        }
+
+    } catch (e) {
+        console.error('Search failed:', e);
+        const container = document.getElementById('search-results');
+        container.innerHTML = '<p class="hint" style="color: var(--danger);">搜索失败，请稍后重试</p>';
+    }
+}
+
+// 实时搜索处理函数
+function handleSearchInput() {
+    const query = document.getElementById('search-query').value.trim();
+
+    // 清除之前的定时器
+    if (searchTimeout) {
+        clearTimeout(searchTimeout);
+    }
+
+    // 如果查询为空，显示提示
+    if (!query) {
+        const container = document.getElementById('search-results');
+        container.innerHTML = '<p class="hint">请输入项目名称或代币符号进行搜索</p>';
+        return;
+    }
+
+    // 设置新的定时器，延迟500ms执行搜索
+    searchTimeout = setTimeout(() => {
+        searchProjects();
+    }, 500);
+}
+
+// 初始化搜索输入框事件监听
+function initSearchInput() {
+    const searchInput = document.getElementById('search-query');
+    if (searchInput) {
+        searchInput.addEventListener('input', handleSearchInput);
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                // 立即执行搜索
+                if (searchTimeout) {
+                    clearTimeout(searchTimeout);
+                }
+                searchProjects();
+            }
+        });
+    }
 }
 
 function selectProject(id, name) {
@@ -315,7 +592,10 @@ async function loadAccounts() {
                 <td>${a.remaining}</td>
                 <td>${a.last_used_at ? new Date(a.last_used_at).toLocaleString() : '-'}</td>
                 <td>
-                    <button class="btn btn-sm btn-danger" onclick="disableAccount(${a.id})">禁用</button>
+                    ${a.status === 'disabled' 
+                        ? `<button class="btn btn-sm btn-success" onclick="enableAccount(${a.id})">启用</button>`
+                        : `<button class="btn btn-sm btn-danger" onclick="disableAccount(${a.id})">禁用</button>`
+                    }
                 </td>
             </tr>
         `).join('');
@@ -353,6 +633,16 @@ async function disableAccount(id) {
     } catch (e) {}
 }
 
+async function enableAccount(id) {
+    if (!confirm('确定要启用此账号吗？')) return;
+    
+    try {
+        await api(`/api/surf/accounts/${id}/enable`, { method: 'PUT' });
+        showToast('账号已启用');
+        loadAccounts();
+    } catch (e) {}
+}
+
 // ==================== 飞书推送 ====================
 async function pushToFeishu() {
     const reportId = document.getElementById('push-report-id').value;
@@ -369,6 +659,11 @@ async function pushToFeishu() {
 }
 
 // ==================== 测试功能 ====================
+// 分页相关变量
+let currentTestPage = 1;
+let currentTestFilterQuery = '';
+let currentTestFilterType = '';
+
 async function testSearchAndSave() {
     const query = document.getElementById('test-search-query').value.trim();
     const preciseSearch = document.getElementById('test-precise-search').value === 'true';
@@ -383,24 +678,31 @@ async function testSearchAndSave() {
             method: 'POST'
         });
         showToast(data.message || '搜索并保存成功');
-        loadTestResults();
+        loadTestResults(1);
     } catch (e) {}
 }
 
-async function loadTestResults() {
+async function loadTestResults(page = 1) {
     try {
         const filterQuery = document.getElementById('test-filter-query')?.value.trim() || '';
         const filterType = document.getElementById('test-filter-type')?.value || '';
         
-        let url = '/api/test/search-results?limit=100';
+        // 保存当前筛选条件
+        currentTestFilterQuery = filterQuery;
+        currentTestFilterType = filterType;
+        currentTestPage = page;
+
+        let url = `/api/test/search-results?page=${page}&page_size=10`;
         if (filterQuery) url += `&query=${encodeURIComponent(filterQuery)}`;
         if (filterType) url += `&entity_type=${filterType}`;
         
         const data = await api(url);
         const tbody = document.getElementById('test-results-table');
+        const paginationDiv = document.getElementById('test-pagination');
         
         if (!data.data || data.data.length === 0) {
             tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无数据</td></tr>';
+            paginationDiv.style.display = 'none';
             return;
         }
         
@@ -424,9 +726,54 @@ async function loadTestResults() {
                 </td>
             </tr>
         `).join('');
+
+        // 更新分页控件
+        updateTestPagination(data.pagination);
+
     } catch (e) {
         console.error('Failed to load test results:', e);
     }
+}
+
+function updateTestPagination(pagination) {
+    const paginationDiv = document.getElementById('test-pagination');
+    const pageNumbersDiv = document.getElementById('test-page-numbers');
+    const prevBtn = document.getElementById('test-prev-btn');
+    const nextBtn = document.getElementById('test-next-btn');
+    const infoDiv = document.getElementById('test-pagination-info');
+
+    if (pagination.total_pages <= 1) {
+        paginationDiv.style.display = 'none';
+        return;
+    }
+
+    paginationDiv.style.display = 'flex';
+
+    // 更新按钮状态
+    prevBtn.disabled = !pagination.has_prev;
+    nextBtn.disabled = !pagination.has_next;
+
+    // 生成页码按钮
+    const startPage = Math.max(1, pagination.page - 2);
+    const endPage = Math.min(pagination.total_pages, pagination.page + 2);
+
+    let pageButtons = '';
+    for (let i = startPage; i <= endPage; i++) {
+        const isActive = i === pagination.page;
+        pageButtons += `<button class="pagination-btn ${isActive ? 'active' : ''}" onclick="changeTestPage(${i})">${i}</button>`;
+    }
+
+    pageNumbersDiv.innerHTML = pageButtons;
+
+    // 更新信息
+    const startItem = (pagination.page - 1) * pagination.page_size + 1;
+    const endItem = Math.min(pagination.page * pagination.page_size, pagination.total_count);
+
+    infoDiv.textContent = `第 ${startItem}-${endItem} 条，共 ${pagination.total_count} 条`;
+}
+
+function changeTestPage(page) {
+    loadTestResults(page);
 }
 
 async function deleteTestResult(id) {

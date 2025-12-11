@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from pathlib import Path
 
 from app.database import get_db
+from app.models import SurfAccount
 from app.services.project_service import ProjectService
 from app.services.surf_account_pool import SurfAccountPool
 from app.services.surf_report_generator import SurfReportGenerator
@@ -173,10 +174,16 @@ async def list_surf_accounts(db: Session = Depends(get_db)):
 
 @router.post("/api/surf/accounts")
 async def add_surf_account(request: SurfAccountCreate, db: Session = Depends(get_db)):
-    """添加Surf账号"""
+    """添加Surf账号（使用邮箱验证码登录）"""
     pool = SurfAccountPool(db)
     try:
-        account = pool.add_account(request.email, request.password)
+        # 现在需要邮箱密码和IMAP配置
+        account = pool.add_account(
+            email=request.email,
+            email_password=request.password,  # 这里的password实际是邮箱密码
+            email_server=getattr(request, 'email_server', 'imap.gmail.com'),
+            email_port=getattr(request, 'email_port', 993)
+        )
         return {
             "message": "Account added successfully",
             "id": account.id,
@@ -186,10 +193,67 @@ async def add_surf_account(request: SurfAccountCreate, db: Session = Depends(get
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class UpdateEmailPasswordRequest(BaseModel):
+    email_password: str
+    email_server: Optional[str] = None
+    email_port: Optional[int] = None
+
+
+# 注意：更具体的路由（带 /enable 和 /password）必须放在更通用的路由（只有 {account_id}）之前
+@router.put("/api/surf/accounts/{account_id}/enable")
+async def enable_surf_account(account_id: int, db: Session = Depends(get_db)):
+    """启用Surf账号"""
+    pool = SurfAccountPool(db)
+    account = db.query(SurfAccount).filter(SurfAccount.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    pool.enable_account(account_id)
+    return {"message": "Account enabled"}
+
+
+@router.put("/api/surf/accounts/{account_id}/password")
+async def update_surf_account_password(
+    account_id: int,
+    request: UpdateEmailPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    更新Surf账号的邮箱密码
+    
+    用于更新应用密码（当Outlook等邮箱需要应用密码时）
+    """
+    pool = SurfAccountPool(db)
+    account = db.query(SurfAccount).filter(SurfAccount.id == account_id).first()
+    
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    # 加密新密码
+    encrypted_password = pool.cipher.encrypt(request.email_password.encode()).decode()
+    account.email_password_encrypted = encrypted_password
+    
+    # 更新IMAP服务器配置（如果提供）
+    if request.email_server:
+        account.email_server = request.email_server
+    if request.email_port:
+        account.email_port = request.email_port
+    
+    db.commit()
+    
+    return {
+        "message": "Password updated successfully",
+        "id": account.id,
+        "email": account.email
+    }
+
+
 @router.delete("/api/surf/accounts/{account_id}")
 async def disable_surf_account(account_id: int, db: Session = Depends(get_db)):
     """禁用Surf账号"""
     pool = SurfAccountPool(db)
+    account = db.query(SurfAccount).filter(SurfAccount.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
     pool.disable_account(account_id)
     return {"message": "Account disabled"}
 
@@ -283,7 +347,7 @@ async def push_to_feishu(report_id: int, db: Session = Depends(get_db)):
     service = ProjectService(db)
     project = service.get_project(report.project_id)
     
-    pusher = ReportPusher()
+    pusher = ReportPusher(settings.feishu_base_file_path)
     
     try:
         record_id = await pusher.push_report(
@@ -615,13 +679,13 @@ async def test_search_and_save(
 
 @router.get("/api/test/search-results")
 async def list_search_results(
-    skip: int = 0,
-    limit: int = 100,
+    page: int = Query(1, ge=1, description="页码，从1开始"),
+    page_size: int = Query(10, ge=1, le=50, description="每页条数"),
     query: Optional[str] = None,
     entity_type: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
-    """列出已保存的搜索结果"""
+    """列出已保存的搜索结果（支持分页）"""
     from app.models import SearchResult
     
     q = db.query(SearchResult)
@@ -630,7 +694,15 @@ async def list_search_results(
     if entity_type:
         q = q.filter(SearchResult.entity_type == entity_type)
     
-    results = q.order_by(SearchResult.created_at.desc()).offset(skip).limit(limit).all()
+    # 获取总数
+    total_count = q.count()
+
+    # 分页查询
+    skip = (page - 1) * page_size
+    results = q.order_by(SearchResult.created_at.desc()).offset(skip).limit(page_size).all()
+
+    # 计算总页数
+    total_pages = (total_count + page_size - 1) // page_size
     
     return {
         "data": [
@@ -649,7 +721,14 @@ async def list_search_results(
             }
             for r in results
         ],
-        "count": len(results)
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_prev": page > 1
+        }
     }
 
 
@@ -660,14 +739,14 @@ async def delete_search_result(
 ):
     """删除搜索结果"""
     from app.models import SearchResult
-
+    
     result = db.query(SearchResult).filter(SearchResult.id == result_id).first()
     if not result:
         raise HTTPException(status_code=404, detail="记录不存在")
-
+    
     db.delete(result)
     db.commit()
-
+    
     return {"message": "删除成功"}
 
 

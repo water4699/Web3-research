@@ -107,13 +107,13 @@ class SurfAccountPool:
         """切换到下一个可用账号"""
         return self.get_available_account()
     
-    def add_account(self, email: str, password: str) -> SurfAccount:
-        """添加新账号"""
-        encrypted_password = self.cipher.encrypt(password.encode()).decode()
-        
+    def add_account(self, email: str, email_password: str, email_server: str = 'imap.gmail.com', email_port: int = 993) -> SurfAccount:
+        """添加新账号（使用邮箱验证码登录）"""
         account = SurfAccount(
             email=email,
-            password_encrypted=encrypted_password,
+            email_password_encrypted=email_password,  # 直接存储明文密码
+            email_server=email_server,
+            email_port=email_port,
             weekly_quota_limit=settings.surf_weekly_free_quota,
             week_start_date=self._get_week_start()
         )
@@ -122,9 +122,9 @@ class SurfAccountPool:
         self.db.refresh(account)
         return account
     
-    def get_password(self, account: SurfAccount) -> str:
-        """解密获取密码"""
-        return self.cipher.decrypt(account.password_encrypted.encode()).decode()
+    def get_email_password(self, account: SurfAccount) -> str:
+        """获取邮箱密码（明文存储，直接返回）"""
+        return account.email_password_encrypted
     
     def update_cookie(self, account_id: int, cookie_data: str) -> None:
         """更新账号的cookie"""
@@ -142,6 +142,15 @@ class SurfAccountPool:
         ).first()
         if account:
             account.status = 'disabled'
+            self.db.commit()
+    
+    def enable_account(self, account_id: int) -> None:
+        """启用账号"""
+        account = self.db.query(SurfAccount).filter(
+            SurfAccount.id == account_id
+        ).first()
+        if account:
+            account.status = 'active'
             self.db.commit()
     
     def get_all_accounts_status(self) -> list:
