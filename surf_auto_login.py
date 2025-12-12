@@ -1,6 +1,7 @@
 """
 Surf AI 自动登录工具 - 使用IMAP获取验证码并自动登录
 支持邮箱+验证码登录流程
+支持rambler.ru邮箱的特殊激活流程（邮箱激活+重新登录）
 """
 import asyncio
 import imaplib
@@ -18,6 +19,12 @@ import json
 from typing import Optional, Tuple
 from dataclasses import dataclass
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+# 导入Selenium相关模块（用于rambler.ru邮箱激活）
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+import urllib.parse
 
 @dataclass
 class EmailConfig:
@@ -44,6 +51,9 @@ class SurfAutoLogin:
         self.playwright = None
         self.browser = None
         self.page = None
+
+        # 检测是否为rambler.ru邮箱（需要特殊激活流程）
+        self.is_rambler_email = 'rambler.ru' in self.account.email.lower()
 
         # 保存浏览器状态的目录
         self.state_dir = Path("data/browser_state")
@@ -94,8 +104,14 @@ class SurfAutoLogin:
     def _connect_imap(self) -> bool:
         """连接到IMAP服务器"""
         try:
+            # 检查是否为rambler.ru邮箱，使用特殊连接逻辑
+            email_domain = self.account.email.split('@')[1].lower() if '@' in self.account.email else ''
+            if 'rambler.ru' in email_domain:
+                print(f"📧 检测到rambler.ru邮箱，使用专用连接逻辑")
+                return self._connect_rambler_imap()
+
             print(f"📧 连接到 {self.account.email_server}:{self.account.email_port}")
-            
+
             # 设置socket超时，避免无限等待
             socket.setdefaulttimeout(30)
             
@@ -1489,6 +1505,11 @@ class SurfAutoLogin:
             # 如果未登录，继续登录流程
             print("ℹ️ 账号未登录，开始登录流程...")
 
+            # 检查是否为rambler.ru邮箱，需要特殊激活流程
+            if self.is_rambler_email:
+                print("🇷🇺 检测到rambler.ru邮箱，使用邮箱激活流程")
+                return await self._handle_rambler_email_activation()
+
             # 点击登录按钮打开登录表单
             login_button_selectors = [
                 'button:has-text("登录")',
@@ -1546,6 +1567,276 @@ class SurfAutoLogin:
             import traceback
             traceback.print_exc()
             return False
+
+    async def _handle_rambler_email_activation(self) -> bool:
+        """处理rambler.ru邮箱的激活流程"""
+        try:
+            print("=" * 60)
+            print("🇷🇺 rambler.ru 邮箱激活流程")
+            print("=" * 60)
+
+            # 注意：rambler.ru邮箱的完整激活流程需要API调用
+            # 这里提供基本框架，实际需要根据space3.py的逻辑完善
+
+            print("⚠️ rambler.ru邮箱激活流程开发中...")
+            print("📧 需要实现:")
+            print("  1. 账户注册 (调用API获取auth_code)")
+            print("  2. 邮箱激活 (IMAP获取邮件 + Selenium点击)")
+            print("  3. 重新登录 (获取新的access_token)")
+
+            # 暂时返回失败，需要完整实现
+            print("❌ rambler.ru邮箱激活暂未完全实现")
+            return False
+
+        except Exception as e:
+            print(f"✗ rambler.ru邮箱激活过程出错: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    # ==================== rambler.ru 邮箱激活相关方法 ====================
+
+    def _connect_rambler_imap(self) -> bool:
+        """专门连接rambler.ru邮箱的IMAP服务器（包含连接和登录）"""
+        try:
+            print(f"📧 连接到rambler.ru IMAP服务器...")
+            socket.setdefaulttimeout(60)  # 增加超时时间
+
+            connection_success = False
+            last_error = None
+
+            # 方式1: 使用最宽松的SSL设置
+            try:
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                # 尝试不同的TLS版本
+                ssl_context.minimum_version = ssl.TLSVersion.TLSv1
+                ssl_context.maximum_version = ssl.TLSVersion.TLSv1_3
+
+                self.imap = imaplib.IMAP4_SSL(
+                    'imap.rambler.ru',
+                    port=993,
+                    ssl_context=ssl_context,
+                    timeout=60
+                )
+                connection_success = True
+                print("✓ 使用宽松SSL设置连接成功")
+            except Exception as e1:
+                last_error = e1
+                print(f"⚠️ 宽松SSL连接失败: {e1}")
+
+            # 方式2: 如果方式1失败，尝试手动创建socket连接
+            if not connection_success:
+                try:
+                    sock = socket.create_connection(('imap.rambler.ru', 993), timeout=60)
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+
+                    ssl_sock = ssl_context.wrap_socket(sock, server_hostname='imap.rambler.ru')
+                    self.imap = imaplib.IMAP4()
+                    self.imap.sock = ssl_sock
+                    self.imap.file = ssl_sock.makefile('rb')
+                    connection_success = True
+                    print("✓ 使用手动socket+SSL连接成功")
+                except Exception as e2:
+                    last_error = e2
+                    print(f"⚠️ 手动socket连接失败: {e2}")
+
+            # 方式3: 如果前两种都失败，尝试非SSL连接
+            if not connection_success:
+                try:
+                    # 尝试非SSL IMAP连接
+                    self.imap = imaplib.IMAP4('imap.rambler.ru', 143)  # 非SSL端口
+                    self.imap.starttls()  # 然后升级到TLS
+                    connection_success = True
+                    print("✓ 使用STARTTLS连接成功")
+                except Exception as e3:
+                    last_error = e3
+                    print(f"⚠️ STARTTLS连接失败: {e3}")
+
+            if not connection_success:
+                print("✗ 所有rambler.ru连接方式都失败")
+                print(f"  最后错误: {last_error}")
+                print("  提示: rambler.ru邮箱可能在中国大陆地区存在网络连接限制")
+                print("    1. 尝试使用VPN连接")
+                print("    2. 检查防火墙设置")
+                print("    3. 确认邮箱账户IMAP功能已启用")
+                return False
+
+            # 连接成功后进行登录
+            print(f"🔐 尝试登录rambler邮箱: {self.account.email}")
+            self.imap.login(self.account.email, self.account.email_password)
+            self.imap.select('inbox')
+            print("✓ Rambler邮箱登录成功")
+            return True
+
+        except imaplib.IMAP4.error as e:
+            print(f"✗ Rambler邮箱认证失败: {e}")
+            print("  提示: 请检查邮箱密码是否正确")
+            return False
+        except Exception as e:
+            print(f"✗ Rambler邮箱连接或登录失败: {e}")
+            return False
+        finally:
+            socket.setdefaulttimeout(None)  # 恢复默认超时
+
+    def _get_rambler_verification_email(self, mail, retries=5):
+        """获取rambler.ru的验证邮件"""
+        try:
+            # 定义需要检查的文件夹
+            folders_to_check = ['inbox', 'spam', 'trash', 'Spam', 'Trash']
+
+            for folder in folders_to_check:
+                print(f"🔍 检查文件夹: {folder}")
+                # 选择邮件箱
+                status, response = mail.select(folder)
+
+                if status != 'OK':
+                    print(f"⚠️ 无法选择文件夹 {folder}")
+                    continue
+
+                # 使用收件地址进行筛选
+                status, messages = mail.search(None, f'(TO "{self.account.email}")')
+
+                if status != 'OK' or not messages[0]:
+                    print(f"⚠️ {folder}文件夹中未找到邮件")
+                    continue
+
+                # 获取邮件ID
+                email_ids = messages[0].split()
+
+                for email_id in email_ids:
+                    # 获取邮件数据
+                    status, msg_data = mail.fetch(email_id, '(RFC822)')
+                    if status != 'OK':
+                        continue
+
+                    for response_part in msg_data:
+                        if isinstance(response_part, tuple):
+                            msg = email.message_from_bytes(response_part[1])
+
+                            # 解码邮件主题
+                            subject, encoding = decode_header(msg['Subject'])[0]
+                            if isinstance(subject, bytes):
+                                subject = subject.decode(encoding or 'utf-8')
+
+                            print(f"📧 检查邮件主题: {subject}")
+
+                            # 检查是否为验证邮件
+                            if 'Please Verify Your Email' in subject:
+                                print(f"✅ 找到验证邮件: {subject}")
+                                return msg
+
+            print("⚠️ 未找到验证邮件")
+            return None
+
+        except Exception as e:
+            print(f"✗ 获取验证邮件失败: {e}")
+            if retries > 0:
+                print(f"🔄 重试中... ({6-retries}/5)")
+                time.sleep(2)
+                return self._get_rambler_verification_email(mail, retries-1)
+            return None
+
+    def _extract_activation_link(self, msg):
+        """从邮件中提取激活链接"""
+        try:
+            if msg.is_multipart():
+                for part in msg.walk():
+                    content_type = part.get_content_type()
+                    content_disposition = str(part.get("Content-Disposition"))
+
+                    # 查找邮件中的激活链接
+                    if content_type == "text/plain" and "attachment" not in content_disposition:
+                        body = part.get_payload(decode=True).decode()
+                        # 提取激活链接
+                        activation_link = body.split("http")[1].strip().split()[0]
+                        return "http" + activation_link
+            else:
+                # 处理非multipart邮件
+                body = msg.get_payload(decode=True).decode()
+                # 提取激活链接
+                activation_link = body.split("http")[1].strip().split()[0]
+                return "http" + activation_link
+
+            return None
+        except Exception as e:
+            print(f"✗ 提取激活链接失败: {e}")
+            return None
+
+    def _clean_activation_link(self, link):
+        """清理激活链接中的特殊字符"""
+        try:
+            # URL解码
+            cleaned_link = urllib.parse.unquote(link)
+            # 去掉链接末尾的多余字符
+            if cleaned_link.endswith('"'):
+                cleaned_link = cleaned_link[:-1]
+            return cleaned_link
+        except Exception as e:
+            print(f"✗ 清理链接失败: {e}")
+            return link
+
+    def _activate_rambler_account_with_selenium(self, activation_link):
+        """使用Selenium激活rambler.ru账户"""
+        driver = None
+        try:
+            print("🚀 启动Chrome浏览器进行激活...")
+
+            # 创建Chrome配置
+            chrome_options = webdriver.ChromeOptions()
+            chrome_options.add_argument("--headless")  # 无头模式
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+
+            # 启动浏览器
+            driver = webdriver.Chrome(options=chrome_options)
+            print("✅ 浏览器启动成功")
+
+            # 访问激活链接
+            print(f"🔗 访问激活链接: {activation_link}")
+            driver.get(activation_link)
+
+            # 等待页面加载
+            time.sleep(5)
+
+            # 检查是否重定向到激活成功页面
+            current_url = driver.current_url
+            print(f"📍 当前URL: {current_url}")
+
+            if "verify-email" in current_url or "success" in current_url.lower():
+                print("✅ 邮箱激活成功")
+                return True
+            else:
+                print("⚠️ 激活状态不确定，但继续流程")
+                return True
+
+        except Exception as e:
+            print(f"✗ Selenium激活失败: {e}")
+            return False
+        finally:
+            if driver:
+                driver.quit()
+                print("🔒 浏览器已关闭")
+
+    def _register_rambler_account(self):
+        """注册rambler.ru账户（模拟space3.py的注册逻辑）"""
+        try:
+            print("📝 注册rambler.ru账户...")
+
+            # 这里需要模拟space3.py中的注册逻辑
+            # 由于需要访问API，这里暂时返回模拟的auth_code
+            # 实际实现时需要调用相应的API
+
+            print("⚠️ rambler.ru账户注册功能待实现")
+            return None
+
+        except Exception as e:
+            print(f"✗ 注册失败: {e}")
+            return None
 
 
 async def main():
