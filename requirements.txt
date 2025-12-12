@@ -15,6 +15,9 @@ alembic==1.12.1
 httpx==0.25.2
 requests==2.31.0
 
+# Proxy Support
+PySocks==1.7.1
+
 # Browser Automation (for Surf)
 playwright==1.40.0
 

@@ -26,6 +26,9 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 import urllib.parse
 
+# 导入代理管理器
+from proxy_manager import ProxyManager
+
 @dataclass
 class EmailConfig:
     """邮箱配置"""
@@ -54,6 +57,9 @@ class SurfAutoLogin:
 
         # 检测是否为rambler.ru邮箱（需要特殊激活流程）
         self.is_rambler_email = 'rambler.ru' in self.account.email.lower()
+
+        # 初始化代理管理器
+        self.proxy_manager = ProxyManager()
 
         # 保存浏览器状态的目录
         self.state_dir = Path("data/browser_state")
@@ -1597,20 +1603,191 @@ class SurfAutoLogin:
     # ==================== rambler.ru 邮箱激活相关方法 ====================
 
     def _connect_rambler_imap(self) -> bool:
-        """专门连接rambler.ru邮箱的IMAP服务器（包含连接和登录）"""
+        """专门连接rambler.ru邮箱的IMAP服务器（支持代理池轮询重试）"""
+        print(f"📧 连接到rambler.ru IMAP服务器...")
+
+        # 获取代理轮询列表
+        proxy_rotation = self.proxy_manager.get_proxy_rotation()
+        print(f"🔄 共有 {len(proxy_rotation)} 个代理可用于轮询")
+
+        # 如果没有代理，尝试直连
+        if not proxy_rotation:
+            print("⚠️ 没有可用代理，尝试直连...")
+            return self._connect_rambler_direct()
+
+        # 轮询尝试每个代理
+        last_error = None
+        for i, proxy_info in enumerate(proxy_rotation):
+            try:
+                print(f"🔄 尝试代理 {i+1}/{len(proxy_rotation)}: {proxy_info.url}")
+
+                # 使用代理连接IMAP
+                success = self._connect_imap_through_proxy(proxy_info)
+                if success:
+                    # 连接成功后进行登录
+                    print(f"🔐 尝试登录rambler邮箱: {self.account.email}")
+                    self.imap.login(self.account.email, self.account.email_password)
+                    self.imap.select('inbox')
+                    print("✓ Rambler邮箱登录成功")
+
+                    # 标记代理成功
+                    self.proxy_manager.mark_proxy_success(proxy_info)
+                    return True
+                else:
+                    # 连接失败，标记代理失败
+                    self.proxy_manager.mark_proxy_failed(proxy_info)
+                    print(f"❌ 代理 {proxy_info.url} 连接失败")
+
+            except imaplib.IMAP4.error as e:
+                last_error = e
+                self.proxy_manager.mark_proxy_failed(proxy_info)
+                print(f"❌ 代理 {proxy_info.url} 认证失败: {e}")
+            except Exception as e:
+                last_error = e
+                self.proxy_manager.mark_proxy_failed(proxy_info)
+                print(f"❌ 代理 {proxy_info.url} 连接异常: {e}")
+
+        # 所有代理都失败，尝试直连作为最后手段
+        print("⚠️ 所有代理都失败，尝试直连...")
+        if self._connect_rambler_direct():
+            print(f"🔐 尝试登录rambler邮箱: {self.account.email}")
+            self.imap.login(self.account.email, self.account.email_password)
+            self.imap.select('inbox')
+            print("✓ Rambler邮箱直连登录成功")
+            return True
+
+        # 完全失败
+        print("✗ 所有代理和直连方式都失败")
+        print(f"  最后错误: {last_error}")
+        print("  建议解决方案:")
+        print("    1. 检查代理列表是否正确配置")
+        print("    2. 确认代理IP可用性")
+        print("    3. 尝试使用VPN连接")
+        print("    4. 检查防火墙和网络设置")
+        return False
+
+    def _connect_imap_through_proxy(self, proxy_info) -> bool:
+        """通过代理连接IMAP服务器"""
         try:
-            print(f"📧 连接到rambler.ru IMAP服务器...")
-            socket.setdefaulttimeout(60)  # 增加超时时间
+            socket.setdefaulttimeout(60)
 
-            connection_success = False
-            last_error = None
+            # 解析代理信息
+            if proxy_info.protocol in ['http', 'https']:
+                # HTTP代理需要特殊处理IMAP over HTTP
+                # 这里使用socksipy或类似库来处理
+                try:
+                    import socks
+                    import socket as sock_socket
 
-            # 方式1: 使用最宽松的SSL设置
+                    # 解析代理URL
+                    proxy_url = proxy_info.url.replace('http://', '').replace('https://', '')
+                    if ':' in proxy_url:
+                        proxy_host, proxy_port = proxy_url.split(':')
+                        proxy_port = int(proxy_port)
+                    else:
+                        proxy_host = proxy_url
+                        proxy_port = 80 if proxy_info.protocol == 'http' else 443
+
+                    # 创建代理socket
+                    sock = socks.socksocket()
+                    if proxy_info.username and proxy_info.password:
+                        # 使用认证信息
+                        sock.set_proxy(socks.HTTP, proxy_host, proxy_port,
+                                     username=proxy_info.username,
+                                     password=proxy_info.password)
+                    else:
+                        sock.set_proxy(socks.HTTP, proxy_host, proxy_port)
+                    sock.connect(('imap.rambler.ru', 993))
+
+                    # 包装SSL
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+
+                    ssl_sock = ssl_context.wrap_socket(sock, server_hostname='imap.rambler.ru')
+                    self.imap = imaplib.IMAP4()
+                    self.imap.sock = ssl_sock
+                    self.imap.file = ssl_sock.makefile('rb')
+
+                    return True
+
+                except ImportError:
+                    print("⚠️ 需要安装 PySocks 库: pip install PySocks")
+                    return False
+                except Exception as e:
+                    print(f"⚠️ HTTP代理连接失败: {e}")
+                    return False
+
+            elif proxy_info.protocol in ['socks4', 'socks5']:
+                # SOCKS代理
+                try:
+                    import socks
+                    import socket as sock_socket
+
+                    # 解析代理URL
+                    proxy_url = proxy_info.url.replace('socks4://', '').replace('socks5://', '')
+                    proxy_host, proxy_port = proxy_url.split(':')
+                    proxy_port = int(proxy_port)
+
+                    # 创建SOCKS代理socket
+                    sock = socks.socksocket()
+                    if proxy_info.username and proxy_info.password:
+                        # 使用认证信息
+                        if proxy_info.protocol == 'socks4':
+                            sock.set_proxy(socks.SOCKS4, proxy_host, proxy_port,
+                                         username=proxy_info.username,
+                                         password=proxy_info.password)
+                        else:
+                            sock.set_proxy(socks.SOCKS5, proxy_host, proxy_port,
+                                         username=proxy_info.username,
+                                         password=proxy_info.password)
+                    else:
+                        if proxy_info.protocol == 'socks4':
+                            sock.set_proxy(socks.SOCKS4, proxy_host, proxy_port)
+                        else:
+                            sock.set_proxy(socks.SOCKS5, proxy_host, proxy_port)
+
+                    sock.connect(('imap.rambler.ru', 993))
+
+                    # 包装SSL
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+
+                    ssl_sock = ssl_context.wrap_socket(sock, server_hostname='imap.rambler.ru')
+                    self.imap = imaplib.IMAP4()
+                    self.imap.sock = ssl_sock
+                    self.imap.file = ssl_sock.makefile('rb')
+
+                    return True
+
+                except ImportError:
+                    print("⚠️ 需要安装 PySocks 库: pip install PySocks")
+                    return False
+                except Exception as e:
+                    print(f"⚠️ SOCKS代理连接失败: {e}")
+                    return False
+
+            else:
+                print(f"⚠️ 不支持的代理协议: {proxy_info.protocol}")
+                return False
+
+        except Exception as e:
+            print(f"⚠️ 代理连接异常: {e}")
+            return False
+        finally:
+            socket.setdefaulttimeout(None)
+
+    def _connect_rambler_direct(self) -> bool:
+        """直接连接rambler.ru邮箱（不使用代理）"""
+        try:
+            socket.setdefaulttimeout(60)
+
+            # 方式1: 使用宽松SSL设置
             try:
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
-                # 尝试不同的TLS版本
                 ssl_context.minimum_version = ssl.TLSVersion.TLSv1
                 ssl_context.maximum_version = ssl.TLSVersion.TLSv1_3
 
@@ -1620,67 +1797,34 @@ class SurfAutoLogin:
                     ssl_context=ssl_context,
                     timeout=60
                 )
-                connection_success = True
-                print("✓ 使用宽松SSL设置连接成功")
+                print("✓ 直连SSL连接成功")
+                return True
             except Exception as e1:
-                last_error = e1
-                print(f"⚠️ 宽松SSL连接失败: {e1}")
+                print(f"⚠️ 直连SSL失败: {e1}")
 
-            # 方式2: 如果方式1失败，尝试手动创建socket连接
-            if not connection_success:
-                try:
-                    sock = socket.create_connection(('imap.rambler.ru', 993), timeout=60)
-                    ssl_context = ssl.create_default_context()
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE
+            # 方式2: 手动socket连接
+            try:
+                sock = socket.create_connection(('imap.rambler.ru', 993), timeout=60)
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
 
-                    ssl_sock = ssl_context.wrap_socket(sock, server_hostname='imap.rambler.ru')
-                    self.imap = imaplib.IMAP4()
-                    self.imap.sock = ssl_sock
-                    self.imap.file = ssl_sock.makefile('rb')
-                    connection_success = True
-                    print("✓ 使用手动socket+SSL连接成功")
-                except Exception as e2:
-                    last_error = e2
-                    print(f"⚠️ 手动socket连接失败: {e2}")
+                ssl_sock = ssl_context.wrap_socket(sock, server_hostname='imap.rambler.ru')
+                self.imap = imaplib.IMAP4()
+                self.imap.sock = ssl_sock
+                self.imap.file = ssl_sock.makefile('rb')
+                print("✓ 直连socket+SSL成功")
+                return True
+            except Exception as e2:
+                print(f"⚠️ 直连socket失败: {e2}")
 
-            # 方式3: 如果前两种都失败，尝试非SSL连接
-            if not connection_success:
-                try:
-                    # 尝试非SSL IMAP连接
-                    self.imap = imaplib.IMAP4('imap.rambler.ru', 143)  # 非SSL端口
-                    self.imap.starttls()  # 然后升级到TLS
-                    connection_success = True
-                    print("✓ 使用STARTTLS连接成功")
-                except Exception as e3:
-                    last_error = e3
-                    print(f"⚠️ STARTTLS连接失败: {e3}")
-
-            if not connection_success:
-                print("✗ 所有rambler.ru连接方式都失败")
-                print(f"  最后错误: {last_error}")
-                print("  提示: rambler.ru邮箱可能在中国大陆地区存在网络连接限制")
-                print("    1. 尝试使用VPN连接")
-                print("    2. 检查防火墙设置")
-                print("    3. 确认邮箱账户IMAP功能已启用")
-                return False
-
-            # 连接成功后进行登录
-            print(f"🔐 尝试登录rambler邮箱: {self.account.email}")
-            self.imap.login(self.account.email, self.account.email_password)
-            self.imap.select('inbox')
-            print("✓ Rambler邮箱登录成功")
-            return True
-
-        except imaplib.IMAP4.error as e:
-            print(f"✗ Rambler邮箱认证失败: {e}")
-            print("  提示: 请检查邮箱密码是否正确")
             return False
+
         except Exception as e:
-            print(f"✗ Rambler邮箱连接或登录失败: {e}")
+            print(f"⚠️ 直连异常: {e}")
             return False
         finally:
-            socket.setdefaulttimeout(None)  # 恢复默认超时
+            socket.setdefaulttimeout(None)
 
     def _get_rambler_verification_email(self, mail, retries=5):
         """获取rambler.ru的验证邮件"""
